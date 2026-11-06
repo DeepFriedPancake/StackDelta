@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StackDelta Visualizer</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/vs2015.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <style>
+        body { 
+            padding: 0; margin: 0; /* Remove default padding to maximize viewport */
+            font-family: var(--vscode-font-family); 
+            color: var(--vscode-editor-foreground);
+            background-color: var(--vscode-editor-background);
+            overflow: hidden; /* Disable native browser scroll */
+        }
+        
+        h2 { margin-left: 20px; position: absolute; z-index: 100; pointer-events: none; }
+
+        /* The window looking into the graph */
+        #viewport {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+            cursor: grab; /* Shows hand cursor */
+        }
+        #viewport:active { cursor: grabbing; }
+
+        /* The infinite board inside the window */
+        #canvas {
+            position: absolute;
+            top: 0; left: 0;
+            width: 1px; height: 1px; /* Force dimension so children can render */
+            overflow: visible;
+            transform-origin: 0 0;
+        }
+
+        #svg-layer {
+            position: absolute;
+            top: 0; left: 0;
+            width: 1px; height: 1px; /* Force dimension to prevent 0x0 clipping bug */
+            overflow: visible; /* Let lines bleed infinitely outside the 1px box */
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        /* Make the node title a drag handle */
+        .node-symbol {
+            cursor: grab;
+            background: rgba(0,0,0,0.1);
+            padding: 4px;
+            border-radius: 4px;
+        }
+        .node-symbol:active { cursor: grabbing; }
+
+        /* Container is just a wrapper now, no more Flexbox */
+        #graph-container {
+            position: absolute;
+            top: 0; left: 0;
+            width: 1px; height: 1px;
+            overflow: visible;
+            z-index: 2;
+        }
+
+        .node-card {
+            /* Switch to absolute positioning */
+            position: absolute;
+            top: 0; left: 0;
+            
+            min-width: 350px;
+            max-width: 500px;
+            border: 1px solid var(--vscode-panel-border); 
+            padding: 15px; 
+            border-radius: 6px; 
+            background: var(--vscode-editorWidget-background);
+            border-left: 4px solid var(--vscode-button-background);
+        }
+
+        .level-column {
+            display: flex;
+            flex-direction: column;
+            gap: 30px; /* Vertical space between sibling cards */
+        }
+
+        /* The SVG layer for drawing lines */
+        #svg-layer {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none; /* Let clicks pass through to the background */
+            z-index: 10;
+        }
+
+        /* Style the zoom lines */
+        path.zoom-line {
+            fill: none;
+            stroke: var(--vscode-editorWarning-foreground, #cca700);
+            stroke-width: 1.5px;
+            stroke-dasharray: 4;
+        }
+
+        /* Dashed line for tracing variable ley lines */
+        path.ley-line {
+            fill: none;
+            stroke: var(--vscode-editorWarning-foreground, #cca700);
+            stroke-width: 1.5px;
+            stroke-dasharray: 6 4;
+        }
+
+        /* Highlight the specific word the user clicked */
+        .active-origin {
+            background-color: var(--vscode-editor-findMatchHighlightBackground);
+            outline: 1px solid var(--vscode-editor-findMatchBorder);
+            border-radius: 2px;
+        }
+
+        .ref-badge {
+            background: var(--vscode-badge-background); 
+            color: var(--vscode-badge-foreground); 
+            padding: 3px 8px; 
+            border-radius: 12px; 
+            font-size: 0.8em; 
+            margin-right: 5px; 
+            display: inline-block; 
+            margin-top: 4px;
+            cursor: pointer;
+            transition: filter 0.2s;
+        }
+        .ref-badge:hover {
+            filter: brightness(1.2);
+        }
+
+        .node-symbol {
+            font-family: monospace;
+            font-size: 1.1em;
+            margin-bottom: 5px;
+        }
+
+        .node-file {
+            font-size: 0.9em;
+            opacity: 0.8;
+            margin-bottom: 10px;
+        }
+
+        .node-card > pre {
+            background: var(--vscode-editor-background);
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-size: 0.85em;
+            margin-bottom: 10px;
+        }
+
+        .node-refs-section {
+            font-size: 0.85em;
+            opacity: 0.9;
+        }
+
+        .node-refs-title {
+            margin-bottom: 4px;
+        }
+
+        .close-card {
+            color: #9f9f9f;
+            position: absolute;
+            top: 0.6em;
+            right: 0.6em;
+            cursor: pointer;
+        }
+        .close-card:hover {
+            color: #bf3f3f;
+        }
+    </style>
+</head>
+<body>
+    <h2>StackDelta Graph</h2>
+
+    <!-- Fixed viewport that hides anything outside the screen -->
+    <div id="viewport">
+        <!-- The moving, scaling canvas -->
+        <div id="canvas">
+            <svg id="svg-layer"></svg>
+            
+            <div id="graph-container">
+                <p style="opacity: 0.7;">Click a symbol and run Trace to start building the graph...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- wrap in SVG layer -->
+    <!-- <div id="graph-wrapper">
+        <svg id="svg-layer"></svg>
+        
+        <div id="graph-container">
+            <p style="opacity: 0.7;">Click a symbol and run Trace to start building the graph...</p>
+        </div>
+    </div> -->
+
+    <!-- TEMPLATES -->
+    <template id="badge-template">
+        <span class="ref-badge"></span>
+    </template>
+
+    <template id="node-template">
+        <div class="node-card">
+            <div class="node-symbol"></div>
+            <div class="node-file"></div>
+            <pre><code class="node-code"></code></pre>
+            <div class="node-refs-section">
+                <div class="node-refs-title"></div>
+                <div class="node-refs-container"></div>
+            </div>
+            <div class="close-card">X</div>
+        </div>
+    </template>
+
+    <!-- Load the external JavaScript securely -->
+    <script src="{{SCRIPT_URI}}"></script>
+</body>
+</html>
